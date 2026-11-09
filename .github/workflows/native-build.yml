@@ -1,0 +1,63 @@
+name: Native Build
+run-name: build ${{ inputs.job_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      uid:
+        description: UID pembuild
+        required: true
+      job_id:
+        description: ID job dari backend
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cari project (ekstrak zip otomatis kalau perlu)
+        id: find
+        run: |
+          g=$(find . -maxdepth 5 -name gradlew -not -path './.git/*' -not -path '*/node_modules/*' | head -n1)
+          if [ -z "$g" ]; then
+            n=0
+            while IFS= read -r z; do
+              n=$((n+1))
+              mkdir -p "_unzipped/$n"
+              unzip -q -o "$z" -d "_unzipped/$n" || true
+              g=$(find "_unzipped/$n" -maxdepth 5 -name gradlew | head -n1)
+              if [ -n "$g" ]; then break; fi
+            done < <(find . -maxdepth 4 -name '*.zip' -not -path './.git/*' -not -path './_unzipped/*' | head -n3)
+          fi
+          if [ -z "$g" ]; then echo "gradlew tidak ditemukan di repo maupun di dalam zip"; exit 1; fi
+          echo "dir=$(dirname "$g")" >> "$GITHUB_OUTPUT"
+
+      - name: Inject UID
+        working-directory: ${{ steps.find.outputs.dir }}
+        env:
+          UID_VALUE: ${{ inputs.uid }}
+        run: |
+          mkdir -p app/src/main/assets
+          jq -n --arg uid "$UID_VALUE" '{uid:$uid}' > app/src/main/assets/uid.json
+
+      - name: Gradle assembleDebug
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: ${{ steps.find.outputs.dir }}/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 3
+          
